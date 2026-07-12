@@ -64,9 +64,18 @@ def retry_operation(name, operation, retries=3, delay=2, *args, **kwargs):
                 raise
 
 
+def capture_friends_tab_diagnostics(page):
+    logger.error(f"找不到朋友私信入口，当前页面: {page.url}")
+    page.screenshot(path="logs/friends-tab-unavailable.png", full_page=True)
+
+
 def open_friends_tab(page):
     friends_tab = page.get_by_text("朋友私信", exact=True)
-    friends_tab.wait_for(state="visible")
+    try:
+        friends_tab.wait_for(state="visible")
+    except Exception:
+        capture_friends_tab_diagnostics(page)
+        raise
     friends_tab.click()
 
 
