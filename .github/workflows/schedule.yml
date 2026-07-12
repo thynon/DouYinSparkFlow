@@ -10,6 +10,9 @@ jobs:
     environment: user-data
     steps:
     - uses: actions/checkout@v4
+      with:
+        # 新版网页聊天入口可按当前对话列表定位收件人。
+        ref: dev
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
