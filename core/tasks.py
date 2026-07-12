@@ -79,12 +79,49 @@ def open_friends_tab(page):
     friends_tab.click()
 
 
+def select_target_from_visible_rows(rows, targets, found_names):
+    for row in rows:
+        row_lines = row.inner_text().splitlines()
+        if not row_lines:
+            continue
+
+        target_name = row_lines[0]
+        if target_name in found_names:
+            continue
+        found_names.add(target_name)
+
+        if matchMode == "short_id":
+            target_symbol = next(
+                (
+                    short_id
+                    for short_id, info in userIDDict.items()
+                    if info.get("nickname") == target_name
+                ),
+                None,
+            )
+        else:
+            target_symbol = target_name
+
+        if target_symbol in targets:
+            row.click()
+            return target_name, target_symbol
+
+    return None, None
+
+
+def send_message(chat_input, message, friend_name):
+    message_lines = message.split("\n")
+    for index, line in enumerate(message_lines):
+        chat_input.type(line)
+        if index < len(message_lines) - 1:
+            chat_input.press("Shift+Enter")
+
+    chat_input.press("Enter")
+    logger.info(f"已向好友 {friend_name} 发送消息")
+
+
 def scroll_and_select_user(page, username, targets):
     """尝试滚动并查找用户名"""
-    # 定义目标元素和滚动容器的选择器
-    target_selector = 'xpath=//*[@id="sub-app"]/div/div[1]/div[2]/div[2]//div[contains(@class, "semi-list-item-body semi-list-item-body-flex-start")]'
-    scrollable_friends_selector = 'xpath=//*[@id="sub-app"]/div/div[1]/div[2]/div[2]/div/div/div[3]/div/div/div/ul/div'
-    
     # [修复] 使用模糊匹配 no-more-tip- 前缀，不再依赖精确哈希后缀
     # 同时增加文本匹配作为兜底
     no_more_selector = 'xpath=//div[contains(@class, "no-more-tip-")]'
@@ -102,6 +139,7 @@ def scroll_and_select_user(page, username, targets):
 
     time.sleep(config["friendListTimeout"] / 1000)  # 等待好友列表加载
 
+    friend_rows = page.get_by_role("row")
     found_targets = set()
     # [修改] 复制一份目标列表用于追踪进度
     remaining_targets = set(targets)
@@ -111,114 +149,51 @@ def scroll_and_select_user(page, username, targets):
     MAX_EMPTY_SCROLLS = 10  # 连续10次滚动没有新好友，认为到底了
 
     while True:
-        # 查找所有目标元素
-        target_elements = page.locator(target_selector).all()
-
-        # [修复] 记录本轮循环前已发现的好友数，用于判断是否有新发现
         prev_found_count = len(found_targets)
+        target_name, target_symbol = select_target_from_visible_rows(
+            friend_rows.all(),
+            targets,
+            found_targets,
+        )
 
-        for element in target_elements:
-            try:
-                # 查找子元素 span，模糊匹配 class
-                span = element.locator(
-                    """xpath=.//span[contains(@class, "item-header-name-")]"""
-                )
-                targetName = span.inner_text()
+        if target_name:
+            logger.debug(f"账号 {username} 选中目标好友 {target_name} 准备开始交互")
+            yield target_name
 
-                if targetName in found_targets:
-                    continue  # 已处理过，跳过
-                found_targets.add(targetName)
+            if target_symbol in remaining_targets:
+                remaining_targets.remove(target_symbol)
+            if not remaining_targets:
+                logger.debug(f"账号 {username} 所有目标好友均已找到，停止搜索")
+                return
+            continue
 
-                logger.debug(f"账号 {username} 找到好友 {targetName}")
-                # 检查是否是目标用户名
-                if matchMode == "short_id":
-                    targetSymbol = next((sid for sid, info in userIDDict.items() if info.get("nickname") == targetName), None)
-                else:
-                    targetSymbol = targetName
-
-                if targetSymbol in targets:
-                    element.click()
-                    if matchMode == "short_id":
-                        logger.debug(
-                            f"账号 {username} 选中目标好友 {targetName} 准备开始交互"
-                        )
-                    else:
-                        logger.debug(
-                            f"账号 {username} 选中目标好友 {targetName} (ShortId: {targetSymbol}) 准备开始交互"
-                        )
-                    yield targetName
-                    
-                    # [修改] 标记已找到，如果全找到了直接退出
-                    if targetSymbol in remaining_targets:
-                        remaining_targets.remove(targetSymbol)
-                    if len(remaining_targets) == 0:
-                        logger.debug(f"账号 {username} 所有目标好友均已找到，停止搜索")
-                        return
-                    break
-            except Exception as e:
-                traceback.print_exc()
+        if len(found_targets) > prev_found_count:
+            empty_scroll_count = 0
         else:
-            # [修复] 检查本轮是否有新好友被发现
-            new_found = len(found_targets) > prev_found_count
-            if new_found:
-                empty_scroll_count = 0  # 有新发现，重置计数器
-            else:
-                empty_scroll_count += 1  # 无新发现，递增计数器
+            empty_scroll_count += 1
 
-            # [修复] 状态检测逻辑（多重兜底）
-            
-            # 1. 检查是否到底（"没有更多了" —— 使用模糊类名匹配）
-            if page.locator(no_more_selector).count() > 0:
-                logger.info(f"账号 {username} 检测到'没有更多了'标志，已到达底部")
-                if len(remaining_targets) > 0:
-                    logger.warning(f"账号 {username} 搜索结束，仍有以下好友未找到: {remaining_targets}")
-                break
+        if page.locator(no_more_selector).count() > 0:
+            logger.info(f"账号 {username} 检测到'没有更多了'标志，已到达底部")
+            if remaining_targets:
+                logger.warning(f"账号 {username} 搜索结束，仍有以下好友未找到: {remaining_targets}")
+            break
 
-            # 2. [修复] 检查连续空滚动次数，防止死循环
-            if empty_scroll_count >= MAX_EMPTY_SCROLLS:
-                logger.warning(f"账号 {username} 连续 {MAX_EMPTY_SCROLLS} 次滚动未发现新好友，判定已到达底部")
-                if len(remaining_targets) > 0:
-                    logger.warning(f"账号 {username} 搜索结束，仍有以下好友未找到: {remaining_targets}")
-                break
+        if empty_scroll_count >= MAX_EMPTY_SCROLLS:
+            logger.warning(f"账号 {username} 连续 {MAX_EMPTY_SCROLLS} 次滚动未发现新好友，判定已到达底部")
+            if remaining_targets:
+                logger.warning(f"账号 {username} 搜索结束，仍有以下好友未找到: {remaining_targets}")
+            break
 
-            # 3. 检查是否正在加载
-            if page.locator(loading_selector).count() > 0:
-                logger.debug(f"账号 {username} 列表正在加载中 (Loading)...")
-                time.sleep(1.5) # 给加载留点时间
-                # 不 break，继续去滚动以触发后续内容
+        if page.locator(loading_selector).count() > 0:
+            logger.debug(f"账号 {username} 列表正在加载中 (Loading)...")
+            time.sleep(1.5)
 
-            # 4. 滚动容器
-            scrollable_element = page.locator(
-                scrollable_friends_selector
-            ).element_handle()
-            
-            if scrollable_element:
-                # [修复] 记录滚动前的 scrollTop，用于检测是否真的滚动了
-                scroll_top_before = page.evaluate(
-                    "(element) => element.scrollTop", scrollable_element
-                )
-                
-                page.evaluate(
-                    "(element) => element.scrollTop += 800", scrollable_element
-                )
-                
-                # [修复] 检测滚动后的 scrollTop
-                time.sleep(0.3)
-                scroll_top_after = page.evaluate(
-                    "(element) => element.scrollTop", scrollable_element
-                )
-                
-                if scroll_top_before == scroll_top_after:
-                    # scrollTop 没有变化，说明已经到底了
-                    empty_scroll_count += 2  # 加速判定到底
-                    logger.debug(f"账号 {username} scrollTop 未变化 ({scroll_top_before})，可能已到底 (空滚动计数: {empty_scroll_count}/{MAX_EMPTY_SCROLLS})")
-                else:
-                    logger.debug(f"账号 {username} 滚动好友列表以加载更多好友 (scrollTop: {scroll_top_before} -> {scroll_top_after})")
-                
-                time.sleep(1.5)
-            else:
-                logger.error(f"账号 {username} 未找到滚动容器，退出")
-                break
+        if friend_rows.count() == 0:
+            logger.error(f"账号 {username} 未找到好友列表，退出")
+            break
+
+        friend_rows.nth(friend_rows.count() - 1).scroll_into_view_if_needed()
+        time.sleep(1.5)
 
 
 def do_user_task(browser, username, cookies, targets):
@@ -260,20 +235,8 @@ def do_user_task(browser, username, cookies, targets):
             page.wait_for_selector(chat_input_selector, timeout=config["browserTimeout"])
             chat_input = page.locator(chat_input_selector)
 
-            # 在 chat-input-dccKiL 中输入内容
             message = build_message()
-            for line in message.split("\\n"):
-                chat_input.type(line)  # 输入每一行
-                # 如果不是最后一行，模拟 Shift+Enter 插入换行
-                if line != message.split("\\n")[-1]:
-                    chat_input.press("Shift+Enter")  # 模拟 Shift+Enter 插入换行
-
-            logger.debug(
-                f"账号 {username} 准备发送消息给好友 {username}：\n\t{message}"
-            )
-            logger.debug(f"账号 {username} 给好友 {username} 发送消息完成")
-            # 模拟按下回车键发送消息
-            chat_input.press("Enter")
+            send_message(chat_input, message, username)
             time.sleep(2)  # 发送完等待一会儿
 
         context.close()  # 任务完成后关闭上下文
